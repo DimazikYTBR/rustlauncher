@@ -340,7 +340,7 @@ pub fn window_button(ui: &mut Ui, kind: WindowButton) -> Response {
         WindowButton::Minimize => p.line_segment([c + vec2(-5.0, 3.0), c + vec2(5.0, 3.0)], st),
         WindowButton::Close => {
             p.line_segment([c + vec2(-4.5, -4.5), c + vec2(4.5, 4.5)], st);
-            p.line_segment([c + vec2(-4.5, 4.5), c + vec2(4.5, -4.5)], st);
+            p.line_segment([c + vec2(-4.5, 4.5), c + vec2(4.5, -4.5)], st)
         }
     }
     resp
