@@ -892,7 +892,7 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_title("RustLauncher")
             .with_decorations(false)
-            .with_transparent(true)
+            .with_transparent(false)
             .with_inner_size([980.0, 660.0])
             .with_min_inner_size([800.0, 520.0]),
         renderer: eframe::Renderer::Glow,
