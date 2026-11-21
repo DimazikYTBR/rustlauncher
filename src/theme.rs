@@ -298,15 +298,8 @@ pub fn section_title(ui: &mut Ui, text: &str) {
 
 // ───────────────────────── Виджеты ─────────────────────────
 
-/// Логотип RustLauncher: картинка из assets/logo.png, а если она не загрузилась — градиентный квадрат с буквой R.
-pub fn logo(ui: &mut Ui, tex: Option<&egui::TextureHandle>) {
-    if let Some(t) = tex {
-        let sz = t.size_vec2();
-        let h = 26.0;
-        let size = vec2(sz.x * h / sz.y, h);
-        ui.add(egui::Image::new(egui::load::SizedTexture::new(t.id(), size)));
-        return;
-    }
+/// Логотип RustLauncher: градиентный скруглённый квадрат с буквой R.
+pub fn logo(ui: &mut Ui) {
     let (rect, _) = ui.allocate_exact_size(vec2(28.0, 28.0), Sense::hover());
     let p = ui.painter();
     p.rect_filled(rect.expand(3.0), Rounding::same(12.0), with_alpha(CYAN, 28));
@@ -337,14 +330,12 @@ pub fn window_button(ui: &mut Ui, kind: WindowButton) -> Response {
     let st = Stroke::new(1.7, col);
     let c = rect.center();
     match kind {
-        WindowButton::Minimize => {
-            p.line_segment([c + vec2(-5.0, 3.0), c + vec2(5.0, 3.0)], st);
-        }
+        WindowButton::Minimize => p.line_segment([c + vec2(-5.0, 3.0), c + vec2(5.0, 3.0)], st),
         WindowButton::Close => {
             p.line_segment([c + vec2(-4.5, -4.5), c + vec2(4.5, 4.5)], st);
             p.line_segment([c + vec2(-4.5, 4.5), c + vec2(4.5, -4.5)], st);
         }
-    };
+    }
     resp
 }
 

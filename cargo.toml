@@ -19,7 +19,6 @@ sha1 = "0.10"
 hex = "0.4"
 md5 = "0.7"
 zip = { version = "2", default-features = false, features = ["deflate"] }
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 # Утилиты
 anyhow = "1"
 dirs = "5"

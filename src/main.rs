@@ -2,7 +2,6 @@
 
 mod fabric;
 mod launcher;
-mod logo;
 mod mojang;
 mod rust_clients;
 mod theme;
@@ -56,7 +55,6 @@ struct App {
     was_started: bool,
     minimized_by_us: bool,
     notice: String,
-    logo_tex: Option<egui::TextureHandle>,
 }
 
 fn scan_installed(root: &Path) -> Vec<String> {
@@ -97,7 +95,7 @@ fn open_folder(p: &Path) {
 }
 
 /// Своя стеклянная шапка: логотип, перетаскивание окна, «Свернуть» и «Закрыть».
-fn title_bar(ctx: &egui::Context, ui: &mut egui::Ui, logo_tex: Option<&egui::TextureHandle>) {
+fn title_bar(ctx: &egui::Context, ui: &mut egui::Ui) {
     let rect = ui.max_rect();
     let drag = ui.interact(rect, ui.id().with("titlebar_drag"), egui::Sense::click_and_drag());
     if drag.drag_started_by(egui::PointerButton::Primary) {
@@ -121,7 +119,7 @@ fn title_bar(ctx: &egui::Context, ui: &mut egui::Ui, logo_tex: Option<&egui::Tex
 
     ui.allocate_ui_at_rect(rect.shrink2(egui::vec2(18.0, 0.0)), |ui| {
         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-            theme::logo(ui, logo_tex);
+            theme::logo(ui);
             ui.add_space(4.0);
             ui.label(egui::RichText::new("RustLauncher").size(17.0).strong().color(egui::Color32::WHITE));
             ui.label(
@@ -151,8 +149,6 @@ impl App {
         let shared = Shared::new();
         let installed = scan_installed(&root);
         let mods = scan_mods(&settings.game_dir);
-        let logo_tex = logo::titlebar_image()
-            .map(|img| cc.egui_ctx.load_texture("logo", img, egui::TextureOptions::LINEAR));
         let app = App {
             rt: Some(rt),
             handle,
@@ -170,7 +166,6 @@ impl App {
             was_started: false,
             minimized_by_us: false,
             notice: String::new(),
-            logo_tex,
         };
         app.refresh_manifest();
         app
@@ -825,7 +820,7 @@ impl eframe::App for App {
         egui::TopBottomPanel::top("titlebar")
             .exact_height(46.0)
             .frame(egui::Frame::none())
-            .show(ctx, |ui| title_bar(ctx, ui, self.logo_tex.as_ref()));
+            .show(ctx, |ui| title_bar(ctx, ui));
 
         // Вкладки-«пилюли»
         egui::TopBottomPanel::top("tabs")
@@ -893,18 +888,13 @@ fn main() -> eframe::Result<()> {
         .build()
         .expect("не удалось запустить tokio");
 
-    let mut viewport = egui::ViewportBuilder::default()
-        .with_title("RustLauncher")
-        .with_decorations(false)
-        .with_transparent(true)
-        .with_inner_size([980.0, 660.0])
-        .with_min_inner_size([800.0, 520.0]);
-    if let Some(icon) = logo::window_icon() {
-        viewport = viewport.with_icon(icon);
-    }
-
     let options = eframe::NativeOptions {
-        viewport,
+        viewport: egui::ViewportBuilder::default()
+            .with_title("RustLauncher")
+            .with_decorations(false)
+            .with_transparent(true)
+            .with_inner_size([980.0, 660.0])
+            .with_min_inner_size([800.0, 520.0]),
         renderer: eframe::Renderer::Glow,
         vsync: true,
         ..Default::default()
