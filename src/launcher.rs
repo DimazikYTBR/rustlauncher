@@ -150,10 +150,22 @@ pub struct Auth {
 
 pub fn make_auth(s: &Settings) -> Auth {
     if s.offline_mode {
-        Auth { uuid: offline_uuid(&s.username), token: "0".into(), user_type: "legacy" }
+        Auth {
+            uuid: offline_uuid(&s.username),
+            token: "00000000000000000000000000000000".into(),
+            user_type: "legacy",
+        }
     } else {
-        let uuid = if s.custom_uuid.trim().is_empty() { offline_uuid(&s.username) } else { s.custom_uuid.trim().to_string() };
-        Auth { uuid, token: s.access_token.clone(), user_type: "msa" }
+        let uuid = if s.custom_uuid.trim().is_empty() {
+            offline_uuid(&s.username)
+        } else {
+            s.custom_uuid.trim().to_string()
+        };
+        Auth {
+            uuid,
+            token: s.access_token.clone(),
+            user_type: "msa",
+        }
     }
 }
 
@@ -197,6 +209,15 @@ pub fn build_args(s: &Settings, p: &Prepared, root: &Path, auth: &Auth) -> Vec<S
         format!("-Xms{}M", s.xms_mb.min(s.ram_mb)),
     ];
     args.extend(s.jvm_flags.split_whitespace().map(String::from));
+
+    if s.offline_mode {
+        args.extend([
+            "-Dminecraft.api.auth.host=https://nope.invalid".to_string(),
+            "-Dminecraft.api.account.host=https://nope.invalid".to_string(),
+            "-Dminecraft.api.session.host=https://nope.invalid".to_string(),
+            "-Dminecraft.api.services.host=https://nope.invalid".to_string(),
+        ]);
+    }
 
     let jvm: Vec<String> = match &p.json.arguments {
         Some(a) if !a.jvm.is_empty() => a.jvm.iter().flat_map(|x| x.resolve()).map(|x| sub(&x)).collect(),
