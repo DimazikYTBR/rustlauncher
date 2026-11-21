@@ -2,8 +2,10 @@
 
 mod fabric;
 mod launcher;
+mod logo;
 mod mojang;
 mod rust_clients;
+mod theme;
 
 use eframe::egui;
 use launcher::Settings;
@@ -22,6 +24,14 @@ enum Tab {
     RustClients,
     Console,
 }
+
+const TABS: [(Tab, &str); 5] = [
+    (Tab::Play, "Играть"),
+    (Tab::Versions, "Версии и моды"),
+    (Tab::Settings, "Настройки"),
+    (Tab::RustClients, "Rust-клиенты"),
+    (Tab::Console, "Консоль"),
+];
 
 struct ModEntry {
     path: PathBuf,
@@ -46,6 +56,7 @@ struct App {
     was_started: bool,
     minimized_by_us: bool,
     notice: String,
+    logo_tex: Option<egui::TextureHandle>,
 }
 
 fn scan_installed(root: &Path) -> Vec<String> {
@@ -85,9 +96,52 @@ fn open_folder(p: &Path) {
     let _ = std::process::Command::new("explorer").arg(p).spawn();
 }
 
+/// Своя стеклянная шапка: логотип, перетаскивание окна, «Свернуть» и «Закрыть».
+fn title_bar(ctx: &egui::Context, ui: &mut egui::Ui, logo_tex: Option<&egui::TextureHandle>) {
+    let rect = ui.max_rect();
+    let drag = ui.interact(rect, ui.id().with("titlebar_drag"), egui::Sense::click_and_drag());
+    if drag.drag_started_by(egui::PointerButton::Primary) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+    }
+    if drag.double_clicked() {
+        let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+    }
+
+    let p = ui.painter();
+    p.rect_filled(
+        rect,
+        egui::Rounding { nw: theme::WINDOW_ROUNDING, ne: theme::WINDOW_ROUNDING, sw: 0.0, se: 0.0 },
+        theme::rgba(255, 255, 255, 9),
+    );
+    p.line_segment(
+        [rect.left_bottom(), rect.right_bottom()],
+        egui::Stroke::new(1.0, theme::rgba(255, 255, 255, 26)),
+    );
+
+    ui.allocate_ui_at_rect(rect.shrink2(egui::vec2(18.0, 0.0)), |ui| {
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            theme::logo(ui, logo_tex);
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new("RustLauncher").size(17.0).strong().color(egui::Color32::WHITE));
+            ui.label(
+                egui::RichText::new(concat!("v", env!("CARGO_PKG_VERSION"))).size(12.0).color(theme::TEXT_DIM),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if theme::window_button(ui, theme::WindowButton::Close).clicked() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                if theme::window_button(ui, theme::WindowButton::Minimize).clicked() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                }
+            });
+        });
+    });
+}
+
 impl App {
     fn new(cc: &eframe::CreationContext<'_>, rt: tokio::runtime::Runtime) -> Self {
-        cc.egui_ctx.set_visuals(egui::Visuals::dark());
+        theme::apply(&cc.egui_ctx);
         let root = launcher::root_dir();
         let _ = std::fs::create_dir_all(&root);
         let settings = Settings::load(&root);
@@ -97,6 +151,8 @@ impl App {
         let shared = Shared::new();
         let installed = scan_installed(&root);
         let mods = scan_mods(&settings.game_dir);
+        let logo_tex = logo::titlebar_image()
+            .map(|img| cc.egui_ctx.load_texture("logo", img, egui::TextureOptions::LINEAR));
         let app = App {
             rt: Some(rt),
             handle,
@@ -114,6 +170,7 @@ impl App {
             was_started: false,
             minimized_by_us: false,
             notice: String::new(),
+            logo_tex,
         };
         app.refresh_manifest();
         app
@@ -229,18 +286,34 @@ impl App {
     // ───────────── Вкладки ─────────────
 
     fn play_tab(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Играть");
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            ui.label("Ник:");
-            ui.add(egui::TextEdit::singleline(&mut self.settings.username).desired_width(200.0));
+        ui.add_space(6.0);
+        ui.columns(2, |cols| {
+            theme::glass_card(&mut cols[0], |ui| self.profile_card(ui));
+            theme::glass_card(&mut cols[1], |ui| self.launch_card(ui));
         });
+    }
+
+    fn profile_card(&mut self, ui: &mut egui::Ui) {
+        theme::section_title(ui, "Профиль");
+        ui.add_space(2.0);
+        ui.label(egui::RichText::new("Никнейм").color(theme::TEXT_DIM));
+        ui.add(
+            egui::TextEdit::singleline(&mut self.settings.username)
+                .hint_text("Player")
+                .margin(egui::vec2(12.0, 9.0))
+                .desired_width(f32::INFINITY),
+        );
         let auth = launcher::make_auth(&self.settings);
-        ui.label(format!(
-            "{} UUID: {}",
-            if self.settings.offline_mode { "Offline" } else { "Профиль" },
-            auth.uuid
-        ));
+        ui.label(
+            egui::RichText::new(format!(
+                "{} UUID: {}",
+                if self.settings.offline_mode { "Offline" } else { "Профиль" },
+                auth.uuid
+            ))
+            .monospace()
+            .size(11.5)
+            .color(theme::TEXT_DIM),
+        );
         ui.add_space(6.0);
 
         let mut list = self.installed.clone();
@@ -251,46 +324,78 @@ impl App {
                 }
             }
         }
-        ui.horizontal(|ui| {
-            egui::ComboBox::from_label("Версия")
-                .selected_text(if self.settings.selected_version.is_empty() {
-                    "—".to_string()
-                } else {
-                    self.settings.selected_version.clone()
-                })
-                .width(220.0)
-                .show_ui(ui, |ui| {
-                    for id in &list {
-                        let mark = if self.installed.contains(id) { " (установлена)" } else { "" };
-                        ui.selectable_value(&mut self.settings.selected_version, id.clone(), format!("{id}{mark}"));
-                    }
-                });
-        });
-        ui.label("Другие версии, снапшоты и моды — на вкладке «Версии и моды».");
-        ui.add_space(12.0);
+        ui.label(egui::RichText::new("Версия / профиль").color(theme::TEXT_DIM));
+        egui::ComboBox::from_id_salt("play_version")
+            .selected_text(if self.settings.selected_version.is_empty() {
+                "—".to_string()
+            } else {
+                self.settings.selected_version.clone()
+            })
+            .width(ui.available_width())
+            .show_ui(ui, |ui| {
+                for id in &list {
+                    let mark = if self.installed.contains(id) { "  ● установлена" } else { "" };
+                    ui.selectable_value(&mut self.settings.selected_version, id.clone(), format!("{id}{mark}"));
+                }
+            });
+        ui.label(
+            egui::RichText::new("Снапшоты, Fabric и моды — на вкладке «Версии и моды».")
+                .size(12.5)
+                .color(theme::TEXT_DIM),
+        );
+    }
 
+    fn launch_card(&mut self, ui: &mut egui::Ui) {
+        theme::section_title(ui, "Запуск");
+        ui.add_space(2.0);
+        ui.label(
+            egui::RichText::new(if self.settings.selected_version.is_empty() {
+                "Версия не выбрана".to_string()
+            } else {
+                self.settings.selected_version.clone()
+            })
+            .size(20.0)
+            .strong()
+            .color(egui::Color32::WHITE),
+        );
+        ui.label(
+            egui::RichText::new(format!("RAM: {} МБ  ·  G1GC", self.settings.ram_mb)).color(theme::TEXT_DIM),
+        );
+        ui.add_space(8.0);
+
+        let w = ui.available_width();
         let running = self.shared.game_running.load(Ordering::SeqCst);
         if !running {
-            if ui.add_sized([200.0, 44.0], egui::Button::new("ИГРАТЬ")).clicked() {
+            if theme::accent_button(ui, "ИГРАТЬ", egui::vec2(w, 68.0), theme::CYAN, theme::INDIGO, theme::NAVY)
+                .clicked()
+            {
                 self.start_game();
             }
-        } else {
-            if ui.add_sized([200.0, 44.0], egui::Button::new("ОСТАНОВИТЬ")).clicked() {
-                self.stop_game();
-            }
-            if !self.shared.game_started.load(Ordering::SeqCst) {
-                ui.add_space(6.0);
-                ui.add(egui::ProgressBar::new(self.shared.progress()).show_percentage());
-            }
+        } else if theme::accent_button(
+            ui,
+            "ОСТАНОВИТЬ",
+            egui::vec2(w, 68.0),
+            theme::ROSE,
+            theme::VIOLET,
+            egui::Color32::WHITE,
+        )
+        .clicked()
+        {
+            self.stop_game();
         }
+        ui.add_space(6.0);
+
+        if running && !self.shared.game_started.load(Ordering::SeqCst) {
+            theme::glass_progress(ui, self.shared.progress());
+        }
+        ui.label(egui::RichText::new(self.shared.status()).color(theme::TEXT_DIM));
         if !self.notice.is_empty() {
-            ui.add_space(6.0);
-            ui.colored_label(egui::Color32::LIGHT_RED, &self.notice);
+            ui.colored_label(egui::Color32::from_rgb(255, 120, 140), &self.notice);
         }
     }
 
     fn versions_panel(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Версии");
+        theme::section_title(ui, "Версии");
         ui.horizontal(|ui| {
             ui.checkbox(&mut self.settings.show_snapshots, "Снапшоты");
             ui.checkbox(&mut self.settings.show_old, "Alpha/Beta");
@@ -300,14 +405,14 @@ impl App {
         });
         ui.horizontal(|ui| {
             ui.label("Поиск:");
-            ui.text_edit_singleline(&mut self.version_search);
+            ui.add(egui::TextEdit::singleline(&mut self.version_search).desired_width(f32::INFINITY));
         });
         ui.label(format!("Выбрана: {}", self.settings.selected_version));
         if ui.button("Установить Fabric для выбранной версии").clicked() {
             self.install_fabric();
         }
         if !self.notice.is_empty() {
-            ui.colored_label(egui::Color32::LIGHT_RED, &self.notice);
+            ui.colored_label(egui::Color32::from_rgb(255, 120, 140), &self.notice);
         }
         ui.separator();
 
@@ -361,10 +466,10 @@ impl App {
     }
 
     fn mods_panel(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Моды");
+        theme::section_title(ui, "Моды");
         let mods_dir = self.settings.game_dir.join("mods");
-        ui.label(format!("Папка: {}", mods_dir.display()));
-        ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(format!("Папка: {}", mods_dir.display())).color(theme::TEXT_DIM));
+        ui.horizontal_wrapped(|ui| {
             if ui.button("Открыть папку").clicked() {
                 open_folder(&mods_dir);
             }
@@ -383,7 +488,11 @@ impl App {
                 self.mods = scan_mods(&self.settings.game_dir);
             }
         });
-        ui.weak("Моды работают только с версией-загрузчиком (Fabric/Quilt/Forge), положенной в versions/<id>/<id>.json.");
+        ui.label(
+            egui::RichText::new("Моды работают с версией-загрузчиком (Fabric/Quilt/Forge).")
+                .size(12.5)
+                .color(theme::TEXT_DIM),
+        );
         ui.separator();
 
         let mut toggle: Option<usize> = None;
@@ -423,204 +532,269 @@ impl App {
     }
 
     fn settings_tab(&mut self, ui: &mut egui::Ui) {
-        egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
-            ui.heading("Память");
-            ui.add(egui::Slider::new(&mut self.settings.ram_mb, 1024..=16384).step_by(256.0).text("Макс. RAM (-Xmx), МБ"));
-            ui.add(egui::Slider::new(&mut self.settings.xms_mb, 256..=4096).step_by(256.0).text("Старт. RAM (-Xms), МБ"));
-            ui.add_space(8.0);
+        egui::ScrollArea::vertical().id_salt("settings_scroll").auto_shrink([false; 2]).show(ui, |ui| {
+            ui.add_space(6.0);
+            theme::glass_card(ui, |ui| {
+                theme::section_title(ui, "Память");
+                ui.add(
+                    egui::Slider::new(&mut self.settings.ram_mb, 1024..=16384)
+                        .step_by(256.0)
+                        .text("Макс. RAM (-Xmx), МБ"),
+                );
+                ui.add(
+                    egui::Slider::new(&mut self.settings.xms_mb, 256..=4096)
+                        .step_by(256.0)
+                        .text("Старт. RAM (-Xms), МБ"),
+                );
+            });
+            ui.add_space(4.0);
 
-            ui.heading("Java");
-            ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut self.settings.java_path).desired_width(420.0));
-                if ui.button("Обзор…").clicked() {
-                    if let Some(p) = rfd::FileDialog::new().add_filter("java", &["exe"]).pick_file() {
-                        self.settings.java_path = p.to_string_lossy().into_owned();
+            theme::glass_card(ui, |ui| {
+                theme::section_title(ui, "Java");
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.settings.java_path).desired_width(420.0));
+                    if ui.button("Обзор…").clicked() {
+                        if let Some(p) = rfd::FileDialog::new().add_filter("java", &["exe"]).pick_file() {
+                            self.settings.java_path = p.to_string_lossy().into_owned();
+                        }
                     }
-                }
-                if ui.button("Найти").clicked() {
-                    self.settings.java_path = launcher::find_java();
+                    if ui.button("Найти").clicked() {
+                        self.settings.java_path = launcher::find_java();
+                    }
+                });
+                ui.label(
+                    egui::RichText::new("1.17+ требует Java 17, 1.20.5+ — Java 21, старые версии — Java 8.")
+                        .size(12.5)
+                        .color(theme::TEXT_DIM),
+                );
+            });
+            ui.add_space(4.0);
+
+            theme::glass_card(ui, |ui| {
+                theme::section_title(ui, "JVM-флаги");
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.settings.jvm_flags)
+                        .desired_rows(6)
+                        .desired_width(f32::INFINITY)
+                        .font(egui::TextStyle::Monospace),
+                );
+                if ui.button("Сбросить на G1GC по умолчанию").clicked() {
+                    self.settings.jvm_flags = launcher::DEFAULT_JVM_FLAGS.to_string();
                 }
             });
-            ui.weak("1.17+ требует Java 17, 1.20.5+ — Java 21, старые версии — Java 8.");
-            ui.add_space(8.0);
+            ui.add_space(4.0);
 
-            ui.heading("JVM-флаги");
-            ui.add(
-                egui::TextEdit::multiline(&mut self.settings.jvm_flags)
-                    .desired_rows(6)
-                    .desired_width(f32::INFINITY)
-                    .font(egui::TextStyle::Monospace),
-            );
-            if ui.button("Сбросить на G1GC по умолчанию").clicked() {
-                self.settings.jvm_flags = launcher::DEFAULT_JVM_FLAGS.to_string();
-            }
-            ui.add_space(8.0);
-
-            ui.heading("Аккаунт");
-            ui.checkbox(&mut self.settings.offline_mode, "Оффлайн-режим (UUID генерируется из ника)");
-            if !self.settings.offline_mode {
-                ui.horizontal(|ui| {
-                    ui.label("UUID:");
-                    ui.text_edit_singleline(&mut self.settings.custom_uuid);
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Access token:");
-                    ui.add(egui::TextEdit::singleline(&mut self.settings.access_token).password(true));
-                });
-            }
-            ui.add_space(8.0);
-
-            ui.heading("Папки и поведение");
-            ui.horizontal(|ui| {
-                ui.label("Папка игры:");
-                let mut s = self.settings.game_dir.to_string_lossy().into_owned();
-                if ui.add(egui::TextEdit::singleline(&mut s).desired_width(380.0)).changed() {
-                    self.settings.game_dir = PathBuf::from(s);
-                }
-                if ui.button("Обзор…").clicked() {
-                    if let Some(p) = rfd::FileDialog::new().pick_folder() {
-                        self.settings.game_dir = p;
-                    }
-                }
-                if ui.button("Открыть").clicked() {
-                    open_folder(&self.settings.game_dir);
+            theme::glass_card(ui, |ui| {
+                theme::section_title(ui, "Аккаунт");
+                ui.checkbox(&mut self.settings.offline_mode, "Оффлайн-режим (UUID генерируется из ника)");
+                if !self.settings.offline_mode {
+                    ui.horizontal(|ui| {
+                        ui.label("UUID:");
+                        ui.text_edit_singleline(&mut self.settings.custom_uuid);
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Access token:");
+                        ui.add(egui::TextEdit::singleline(&mut self.settings.access_token).password(true));
+                    });
                 }
             });
-            ui.checkbox(&mut self.settings.minimize_on_launch, "Сворачивать лаунчер после запуска игры");
-            ui.checkbox(&mut self.settings.kill_on_exit, "Закрывать игру вместе с лаунчером");
+            ui.add_space(4.0);
+
+            theme::glass_card(ui, |ui| {
+                theme::section_title(ui, "Папки и поведение");
+                ui.horizontal(|ui| {
+                    ui.label("Папка игры:");
+                    let mut s = self.settings.game_dir.to_string_lossy().into_owned();
+                    if ui.add(egui::TextEdit::singleline(&mut s).desired_width(380.0)).changed() {
+                        self.settings.game_dir = PathBuf::from(s);
+                    }
+                    if ui.button("Обзор…").clicked() {
+                        if let Some(p) = rfd::FileDialog::new().pick_folder() {
+                            self.settings.game_dir = p;
+                        }
+                    }
+                    if ui.button("Открыть").clicked() {
+                        open_folder(&self.settings.game_dir);
+                    }
+                });
+                ui.checkbox(&mut self.settings.minimize_on_launch, "Сворачивать лаунчер после запуска игры");
+                ui.checkbox(&mut self.settings.kill_on_exit, "Закрывать игру вместе с лаунчером");
+                ui.add_space(4.0);
+                if ui.button("Сохранить настройки").clicked() {
+                    self.notice = match self.settings.save(&self.root) {
+                        Ok(()) => "Настройки сохранены".into(),
+                        Err(e) => format!("Ошибка сохранения: {e}"),
+                    };
+                }
+                if !self.notice.is_empty() {
+                    ui.label(&self.notice);
+                }
+            });
             ui.add_space(8.0);
-            if ui.button("Сохранить настройки").clicked() {
-                self.notice = match self.settings.save(&self.root) {
-                    Ok(()) => "Настройки сохранены".into(),
-                    Err(e) => format!("Ошибка сохранения: {e}"),
-                };
-            }
-            if !self.notice.is_empty() {
-                ui.label(&self.notice);
-            }
         });
     }
 
     fn clients_tab(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Нативные Rust-клиенты");
-        ui.label("Запуск готовых бинарников (horizon.exe, кастомный воксельный клиент и т.п.). Вывод идёт во вкладку «Консоль».");
         ui.add_space(6.0);
+        theme::glass_card(ui, |ui| {
+            theme::section_title(ui, "Нативные Rust-клиенты");
+            ui.label(
+                egui::RichText::new(
+                    "Запуск готовых бинарников (horizon.exe, кастомный воксельный клиент и т.п.). Вывод идёт во вкладку «Консоль».",
+                )
+                .color(theme::TEXT_DIM),
+            );
+            ui.add_space(4.0);
 
-        let names: Vec<String> = self.settings.rust_clients.iter().map(|p| p.name.clone()).collect();
-        let (mut add, mut remove) = (false, false);
-        ui.horizontal(|ui| {
-            egui::ComboBox::from_label("Профиль")
-                .selected_text(names.get(self.settings.selected_rust_client).cloned().unwrap_or_default())
-                .show_ui(ui, |ui| {
-                    for (i, n) in names.iter().enumerate() {
-                        ui.selectable_value(&mut self.settings.selected_rust_client, i, n);
+            let names: Vec<String> = self.settings.rust_clients.iter().map(|p| p.name.clone()).collect();
+            let (mut add, mut remove) = (false, false);
+            ui.horizontal(|ui| {
+                egui::ComboBox::from_label("Профиль")
+                    .selected_text(names.get(self.settings.selected_rust_client).cloned().unwrap_or_default())
+                    .show_ui(ui, |ui| {
+                        for (i, n) in names.iter().enumerate() {
+                            ui.selectable_value(&mut self.settings.selected_rust_client, i, n);
+                        }
+                    });
+                add = ui.button("+ Профиль").clicked();
+                remove = ui.button("Удалить").clicked();
+            });
+            if add {
+                self.settings.rust_clients.push(rust_clients::RustClientProfile {
+                    name: format!("Клиент {}", names.len() + 1),
+                    ..Default::default()
+                });
+                self.settings.selected_rust_client = self.settings.rust_clients.len() - 1;
+            }
+            if remove && self.settings.rust_clients.len() > 1 {
+                self.settings.rust_clients.remove(self.settings.selected_rust_client);
+                self.settings.selected_rust_client = 0;
+            }
+            let idx = self.settings.selected_rust_client.min(self.settings.rust_clients.len().saturating_sub(1));
+            self.settings.selected_rust_client = idx;
+
+            if let Some(p) = self.settings.rust_clients.get_mut(idx) {
+                ui.horizontal(|ui| {
+                    ui.label("Название:");
+                    ui.text_edit_singleline(&mut p.name);
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Исполняемый файл:");
+                    ui.add(egui::TextEdit::singleline(&mut p.exe_path).desired_width(380.0));
+                    if ui.button("Обзор…").clicked() {
+                        if let Some(f) = rfd::FileDialog::new().add_filter("exe", &["exe"]).pick_file() {
+                            p.exe_path = f.to_string_lossy().into_owned();
+                        }
                     }
                 });
-            add = ui.button("+ Профиль").clicked();
-            remove = ui.button("Удалить").clicked();
-        });
-        if add {
-            self.settings.rust_clients.push(rust_clients::RustClientProfile {
-                name: format!("Клиент {}", names.len() + 1),
-                ..Default::default()
-            });
-            self.settings.selected_rust_client = self.settings.rust_clients.len() - 1;
-        }
-        if remove && self.settings.rust_clients.len() > 1 {
-            self.settings.rust_clients.remove(self.settings.selected_rust_client);
-            self.settings.selected_rust_client = 0;
-        }
-        let idx = self.settings.selected_rust_client.min(self.settings.rust_clients.len().saturating_sub(1));
-        self.settings.selected_rust_client = idx;
+                ui.horizontal(|ui| {
+                    ui.label("Аргументы:");
+                    ui.add(egui::TextEdit::singleline(&mut p.args).desired_width(380.0));
+                });
+                ui.label(
+                    egui::RichText::new("Подстановки: {username}, {uuid}, {game_dir}")
+                        .size(12.5)
+                        .color(theme::TEXT_DIM),
+                );
+                ui.horizontal(|ui| {
+                    ui.label("Рабочая папка:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut p.working_dir)
+                            .desired_width(380.0)
+                            .hint_text("по умолчанию — папка exe"),
+                    );
+                });
+            }
+            ui.add_space(8.0);
 
-        if let Some(p) = self.settings.rust_clients.get_mut(idx) {
-            ui.horizontal(|ui| {
-                ui.label("Название:");
-                ui.text_edit_singleline(&mut p.name);
-            });
-            ui.horizontal(|ui| {
-                ui.label("Исполняемый файл:");
-                ui.add(egui::TextEdit::singleline(&mut p.exe_path).desired_width(380.0));
-                if ui.button("Обзор…").clicked() {
-                    if let Some(f) = rfd::FileDialog::new().add_filter("exe", &["exe"]).pick_file() {
-                        p.exe_path = f.to_string_lossy().into_owned();
-                    }
+            let w = ui.available_width().min(320.0);
+            let running = self.shared.client_running.load(Ordering::SeqCst);
+            if !running {
+                if theme::accent_button(ui, "ЗАПУСТИТЬ КЛИЕНТ", egui::vec2(w, 52.0), theme::CYAN, theme::INDIGO, theme::NAVY)
+                    .clicked()
+                {
+                    self.start_client();
                 }
-            });
-            ui.horizontal(|ui| {
-                ui.label("Аргументы:");
-                ui.add(egui::TextEdit::singleline(&mut p.args).desired_width(380.0));
-            });
-            ui.weak("Подстановки: {username}, {uuid}, {game_dir}");
-            ui.horizontal(|ui| {
-                ui.label("Рабочая папка:");
-                ui.add(egui::TextEdit::singleline(&mut p.working_dir).desired_width(380.0).hint_text("по умолчанию — папка exe"));
-            });
-        }
-        ui.add_space(10.0);
-
-        let running = self.shared.client_running.load(Ordering::SeqCst);
-        if !running {
-            if ui.add_sized([200.0, 40.0], egui::Button::new("Запустить клиент")).clicked() {
-                self.start_client();
+            } else if theme::accent_button(
+                ui,
+                "ОСТАНОВИТЬ КЛИЕНТ",
+                egui::vec2(w, 52.0),
+                theme::ROSE,
+                theme::VIOLET,
+                egui::Color32::WHITE,
+            )
+            .clicked()
+            {
+                if let Some(tx) = self.client_kill.take() {
+                    let _ = tx.send(());
+                }
             }
-        } else if ui.add_sized([200.0, 40.0], egui::Button::new("Остановить клиент")).clicked() {
-            if let Some(tx) = self.client_kill.take() {
-                let _ = tx.send(());
+            if !self.notice.is_empty() {
+                ui.colored_label(egui::Color32::from_rgb(255, 120, 140), &self.notice);
             }
-        }
-        if !self.notice.is_empty() {
-            ui.colored_label(egui::Color32::LIGHT_RED, &self.notice);
-        }
+        });
     }
 
     fn console_tab(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            if ui.button("Очистить").clicked() {
-                lk(&self.shared.logs).clear();
-            }
-            if ui.button("Копировать всё").clicked() {
-                let text = lk(&self.shared.logs).join("\n");
-                ui.ctx().copy_text(text);
-            }
-        });
-        ui.separator();
-        let row_h = ui.text_style_height(&egui::TextStyle::Monospace);
-        let logs = lk(&self.shared.logs);
-        egui::ScrollArea::both()
-            .id_salt("console_scroll")
-            .stick_to_bottom(true)
-            .auto_shrink([false; 2])
-            .show_rows(ui, row_h, logs.len(), |ui, range| {
-                for i in range {
-                    let line = &logs[i];
-                    let color = if line.contains("[ERROR]") || line.contains("/ERROR]") || line.contains("Exception") {
-                        egui::Color32::LIGHT_RED
-                    } else if line.contains("[WARN]") || line.contains("/WARN]") {
-                        egui::Color32::YELLOW
-                    } else {
-                        ui.visuals().text_color()
-                    };
-                    ui.add(
-                        egui::Label::new(egui::RichText::new(line).monospace().color(color))
-                            .wrap_mode(egui::TextWrapMode::Extend),
-                    );
-                }
+        ui.add_space(6.0);
+        theme::glass_card_full(ui, |ui| {
+            ui.horizontal(|ui| {
+                theme::section_title(ui, "Консоль");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Копировать всё").clicked() {
+                        let text = lk(&self.shared.logs).join("\n");
+                        ui.ctx().copy_text(text);
+                    }
+                    if ui.button("Очистить").clicked() {
+                        lk(&self.shared.logs).clear();
+                    }
+                });
             });
+            ui.separator();
+            let row_h = ui.text_style_height(&egui::TextStyle::Monospace);
+            let logs = lk(&self.shared.logs);
+            egui::ScrollArea::both()
+                .id_salt("console_scroll")
+                .stick_to_bottom(true)
+                .auto_shrink([false; 2])
+                .show_rows(ui, row_h, logs.len(), |ui, range| {
+                    for i in range {
+                        let line = &logs[i];
+                        let color = if line.contains("[ERROR]") || line.contains("/ERROR]") || line.contains("Exception") {
+                            egui::Color32::from_rgb(255, 120, 140)
+                        } else if line.contains("[WARN]") || line.contains("/WARN]") {
+                            egui::Color32::YELLOW
+                        } else {
+                            theme::TEXT
+                        };
+                        ui.add(
+                            egui::Label::new(egui::RichText::new(line).monospace().color(color))
+                                .wrap_mode(egui::TextWrapMode::Extend),
+                        );
+                    }
+                });
+        });
     }
 }
 
 impl eframe::App for App {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        // Прозрачное окно: фон и скругления рисует theme::draw_liquid_background.
+        [0.0, 0.0, 0.0, 0.0]
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if self.settings.selected_version.is_empty() {
-            if let Some(m) = lk(&self.shared.manifest).as_ref() {
-                self.settings.selected_version = m.latest.release.clone();
-            }
-        }
+        theme::draw_liquid_background(ctx);
+
         let pending = lk(&self.shared.pending_select).take();
         if let Some(id) = pending {
             self.settings.selected_version = id;
             self.installed = scan_installed(&self.root);
+        }
+        if self.settings.selected_version.is_empty() {
+            if let Some(m) = lk(&self.shared.manifest).as_ref() {
+                self.settings.selected_version = m.latest.release.clone();
+            }
         }
         if self.last_scan.elapsed() > Duration::from_secs(2) {
             self.installed = scan_installed(&self.root);
@@ -647,46 +821,48 @@ impl eframe::App for App {
         }
         self.was_started = started;
 
-        egui::TopBottomPanel::top("tabs").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                for (t, n) in [
-                    (Tab::Play, "Играть"),
-                    (Tab::Versions, "Версии и моды"),
-                    (Tab::Settings, "Настройки"),
-                    (Tab::RustClients, "Rust-клиенты"),
-                    (Tab::Console, "Консоль"),
-                ] {
-                    if ui.selectable_value(&mut self.tab, t, n).clicked() {
-                        self.notice.clear();
-                        if t == Tab::Versions {
-                            self.mods = scan_mods(&self.settings.game_dir);
-                        }
+        // Шапка окна
+        egui::TopBottomPanel::top("titlebar")
+            .exact_height(46.0)
+            .frame(egui::Frame::none())
+            .show(ctx, |ui| title_bar(ctx, ui, self.logo_tex.as_ref()));
+
+        // Вкладки-«пилюли»
+        egui::TopBottomPanel::top("tabs")
+            .frame(egui::Frame::none().inner_margin(egui::Margin::symmetric(20.0, 10.0)))
+            .show(ctx, |ui| {
+                if theme::pill_tabs(ui, &mut self.tab, &TABS) {
+                    self.notice.clear();
+                    if self.tab == Tab::Versions {
+                        self.mods = scan_mods(&self.settings.game_dir);
                     }
                 }
             });
-        });
 
-        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(self.shared.status());
-                if self.shared.game_running.load(Ordering::SeqCst) && !self.shared.game_started.load(Ordering::SeqCst) {
-                    ui.add(egui::ProgressBar::new(self.shared.progress()).desired_width(260.0).show_percentage());
-                }
+        // Строка состояния
+        egui::TopBottomPanel::bottom("status")
+            .frame(egui::Frame::none().inner_margin(egui::Margin::symmetric(26.0, 8.0)))
+            .show(ctx, |ui| {
+                ui.label(egui::RichText::new(self.shared.status()).size(12.5).color(theme::TEXT_DIM));
             });
-        });
 
-        egui::CentralPanel::default().show(ctx, |ui| match self.tab {
-            Tab::Play => self.play_tab(ui),
-            Tab::Versions => {
-                ui.columns(2, |cols| {
-                    self.versions_panel(&mut cols[0]);
-                    self.mods_panel(&mut cols[1]);
-                });
-            }
-            Tab::Settings => self.settings_tab(ui),
-            Tab::RustClients => self.clients_tab(ui),
-            Tab::Console => self.console_tab(ui),
-        });
+        egui::CentralPanel::default()
+            .frame(egui::Frame::none().inner_margin(egui::Margin { left: 20.0, right: 20.0, top: 0.0, bottom: 4.0 }))
+            .show(ctx, |ui| match self.tab {
+                Tab::Play => self.play_tab(ui),
+                Tab::Versions => {
+                    ui.add_space(6.0);
+                    ui.columns(2, |cols| {
+                        theme::glass_card_full(&mut cols[0], |ui| self.versions_panel(ui));
+                        theme::glass_card_full(&mut cols[1], |ui| self.mods_panel(ui));
+                    });
+                }
+                Tab::Settings => self.settings_tab(ui),
+                Tab::RustClients => self.clients_tab(ui),
+                Tab::Console => self.console_tab(ui),
+            });
+
+        theme::draw_window_border(ctx);
 
         let busy = self.shared.game_running.load(Ordering::SeqCst) || self.shared.client_running.load(Ordering::SeqCst);
         ctx.request_repaint_after(Duration::from_millis(if busy { 50 } else { 250 }));
@@ -717,11 +893,18 @@ fn main() -> eframe::Result<()> {
         .build()
         .expect("не удалось запустить tokio");
 
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("RustLauncher")
+        .with_decorations(false)
+        .with_transparent(true)
+        .with_inner_size([980.0, 660.0])
+        .with_min_inner_size([800.0, 520.0]);
+    if let Some(icon) = logo::window_icon() {
+        viewport = viewport.with_icon(icon);
+    }
+
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("RustLauncher")
-            .with_inner_size([960.0, 640.0])
-            .with_min_inner_size([760.0, 480.0]),
+        viewport,
         renderer: eframe::Renderer::Glow,
         vsync: true,
         ..Default::default()
